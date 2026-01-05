@@ -1,190 +1,143 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime, timedelta
-import os
+from datetime import date, datetime
 
-# --- 設定: スマホで見やすく ---
-st.set_page_config(page_title="DQW Manager", page_icon="🛡️", layout="centered")
-
-# --- データ保存用関数 (CSV) ---
-HISTORY_FILE = "dqw_history.csv"
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        return pd.read_csv(HISTORY_FILE)
-    else:
-        return pd.DataFrame(columns=["date", "task", "done"])
-
-def save_history(df):
-    df.to_csv(HISTORY_FILE, index=False)
-
-def toggle_task(task_name):
-    # 履歴データの読み込み
-    df = load_history()
-    today_str = date.today().isoformat()
-    
-    # 今日の該当タスクのレコードを探す
-    mask = (df["date"] == today_str) & (df["task"] == task_name)
-    
-    if mask.any():
-        # 既に記録がある場合は反転させる（True <-> False）
-        current_status = df.loc[mask, "done"].values[0]
-        df.loc[mask, "done"] = not current_status
-    else:
-        # 新規作成（チェックした状態にする）
-        new_row = pd.DataFrame({"date": [today_str], "task": [task_name], "done": [True]})
-        df = pd.concat([df, new_row], ignore_index=True)
-    
-    save_history(df)
-
-# --- アプリ本体 ---
-st.title("🛡️ DQW Manager")
-
-# タブメニュー (下部ナビゲーションの代わりに上部に配置)
-tab_daily, tab_level, tab_history, tab_kokoro = st.tabs(["✅ 日課", "📈 育成", "📅 履歴", "🔍 収集"])
+# --- 設定: 画面の広さを確保 ---
+st.set_page_config(page_title="DQW Manager V3", page_icon="🛡️", layout="wide")
 
 # ==========================================
-# Tab 1: 日課 (スマホ操作メイン)
+# 関数: データ初期化
 # ==========================================
-with tab_daily:
-    st.subheader("今日の進捗")
+def init_session_state():
+    # 日課リストの初期値
+    if 'daily_tasks' not in st.session_state:
+        st.session_state['daily_tasks'] = [
+            {"task": "デイリークエスト", "done": False},
+            {"task": "スラミチメダル回収", "done": False},
+            {"task": "CM動画視聴", "done": False},
+        ]
     
-    # 履歴データの取得
-    df_hist = load_history()
-    today_str = date.today().isoformat()
-    
-    # --- 日課リスト定義 ---
-    daily_tasks = [
-        "デイリークエスト",
-        "スラミチメダル回収",
-        "カジノコイン回収",
-        "CM動画視聴 (ジェム)",
-        "自宅キラキラ回収",
-        "仲間モンスター世話",
-    ]
-    
-    weekly_tasks = [
-        "週末メタルダンジョン",
-        "覚醒千里行",
-        "ほこら更新/消化",
-        "マイレージ確認",
-    ]
+    # こころリストの初期値 (構造を強化: 優先度, 目標数, 所持数)
+    if 'kokoro_df' not in st.session_state:
+        data = [
+            {"名前": "キラーマジンガ", "優先度": "高", "目標数": 2, "所持数": 0, "完了": False},
+            {"名前": "覚醒千里行対象", "優先度": "中", "目標数": 4, "所持数": 1, "完了": False},
+            {"名前": "メタルキング", "優先度": "低", "目標数": 1, "所持数": 1, "完了": True},
+        ]
+        st.session_state['kokoro_df'] = pd.DataFrame(data)
 
-    # --- UI表示 ---
-    # 進捗バーの計算
-    today_data = df_hist[df_hist["date"] == today_str]
-    # 今日のタスクで、かつDoneになっているものの数
-    done_count = sum(1 for t in daily_tasks if not today_data[(today_data["task"] == t) & (today_data["done"] == True)].empty)
-    progress = done_count / len(daily_tasks)
-    st.progress(progress)
-    st.caption(f"達成率: {int(progress * 100)}%")
+init_session_state()
 
-    st.write("---")
-    st.markdown("##### 🌞 毎日やること")
-    
-    # スマホで押しやすいように、expanderを使わず直接配置
-    for task in daily_tasks:
-        # 現在の状態を確認
-        is_checked = not today_data[(today_data["task"] == task) & (today_data["done"] == True)].empty
+# ==========================================
+# メイン画面
+# ==========================================
+st.title("🛡️ DQW 進捗マネージャー V3")
+
+# タブ構成
+tab1, tab2 = st.tabs(["✅ 日課・タスク", "❤️ 欲しい心リスト"])
+
+# ==========================================
+# Tab 1: 日課 (追加・削除機能付き)
+# ==========================================
+with tab1:
+    st.subheader("📝 今日の日課")
+    st.caption("チェックを入れると完了。項目の追加削除も可能です。")
+
+    # --- 1. タスクリスト表示 ---
+    # 削除したいインデックスを保存するリスト
+    idx_to_remove = []
+
+    for i, item in enumerate(st.session_state['daily_tasks']):
+        col_check, col_name, col_del = st.columns([0.1, 0.7, 0.2])
         
-        # チェックボックス (callbackで状態保存)
-        if st.checkbox(task, value=is_checked, key=f"d_{task}"):
-            if not is_checked: # False -> True になった時
-                toggle_task(task)
-                st.rerun()
+        # チェックボックス
+        is_checked = col_check.checkbox("", value=item["done"], key=f"task_{i}")
+        st.session_state['daily_tasks'][i]["done"] = is_checked
+        
+        # タスク名表示（完了なら打消し線）
+        if is_checked:
+            col_name.markdown(f"~~{item['task']}~~")
         else:
-            if is_checked: # True -> False になった時
-                toggle_task(task)
+            col_name.markdown(f"**{item['task']}**")
+            
+        # 削除ボタン
+        if col_del.button("🗑️", key=f"del_{i}"):
+            idx_to_remove.append(i)
+
+    # 削除処理
+    if idx_to_remove:
+        for i in sorted(idx_to_remove, reverse=True):
+            st.session_state['daily_tasks'].pop(i)
+        st.rerun()
+
+    # --- 2. 新規タスク追加 ---
+    st.markdown("---")
+    with st.expander("＋ 新しい日課を登録する"):
+        with st.form("new_task_form", clear_on_submit=True):
+            new_task_name = st.text_input("タスク名 (例: ほこら消化)")
+            submitted = st.form_submit_button("追加")
+            if submitted and new_task_name:
+                st.session_state['daily_tasks'].append({"task": new_task_name, "done": False})
                 st.rerun()
 
-    st.write("---")
-    st.markdown("##### 📅 週課 / その他")
-    for task in weekly_tasks:
-        is_checked = not today_data[(today_data["task"] == task) & (today_data["done"] == True)].empty
-        if st.checkbox(task, value=is_checked, key=f"w_{task}"):
-             if not is_checked: toggle_task(task); st.rerun()
-        else:
-             if is_checked: toggle_task(task); st.rerun()
+# ==========================================
+# Tab 2: 欲しい心リスト (高機能版)
+# ==========================================
+with tab2:
+    st.subheader("❤️ こころ収集管理")
+    st.info("下の表を直接タップして編集できます。「目標数」に達すると自動で「獲得済み」に移動します。")
 
-# ==========================================
-# Tab 2: 育成 (レベリング)
-# ==========================================
-with tab_level:
-    # 設定をここに移動（サイドバーを開かなくて済むように）
-    with st.expander("🎯 目標設定を開く", expanded=False):
-        target_date = st.date_input("いつまでに達成？", value=date(2026, 4, 30))
-        target_xp = st.number_input("目標経験値 (万)", min_value=0, value=2000, step=100)
+    # DataFrameを取得
+    df = st.session_state['kokoro_df']
+
+    # --- 編集用テーブルの設定 ---
+    # 編集されたデータを受け取る
+    edited_df = st.data_editor(
+        df,
+        num_rows="dynamic", # 行の追加削除を許可
+        column_config={
+            "名前": st.column_config.TextColumn("こころの名前", required=True),
+            "優先度": st.column_config.SelectboxColumn(
+                "優先度",
+                options=["高", "中", "低"],
+                required=True,
+                width="small"
+            ),
+            "目標数": st.column_config.NumberColumn("目標", min_value=1, step=1, width="small"),
+            "所持数": st.column_config.NumberColumn("所持", min_value=0, step=1, width="small"),
+            "完了": st.column_config.CheckboxColumn("完了", disabled=True) # 自動判定のため入力不可に
+        },
+        use_container_width=True,
+        hide_index=True,
+        key="editor"
+    )
+
+    # --- データの更新と自動判定ロジック ---
+    # 所持数 >= 目標数 なら「完了」フラグを立てる
+    if not edited_df.equals(df):
+        edited_df["完了"] = edited_df["所持数"] >= edited_df["目標数"]
+        st.session_state['kokoro_df'] = edited_df
+        st.rerun()
+
+    # --- 獲得済みリスト（履歴） ---
+    st.markdown("### 🏆 獲得済みコレクション")
     
-    st.subheader("📊 今日のノルマ")
-    current_xp = st.number_input("現在の経験値 (万)", min_value=0, value=1000, step=10)
-
-    # 計算
-    days_left = (target_date - date.today()).days
-    if days_left > 0:
-        rem_xp = target_xp - current_xp
-        quota = rem_xp / days_left
-        st.info(f"残り日数: **{days_left}日**")
-        st.metric("今日稼ぐ経験値", f"{quota:,.1f} 万", delta=f"残り合計: {rem_xp}万")
-        
-        if quota > 300:
-            st.warning("⚠️ かなりハードです！ウォークモード活用を！")
+    # 完了フラグが立っているものだけ抽出
+    completed_df = edited_df[edited_df["完了"] == True]
+    
+    if not completed_df.empty:
+        st.dataframe(
+            completed_df[["名前", "目標数", "所持数"]],
+            use_container_width=True,
+            hide_index=True
+        )
     else:
-        st.success("期日到達！")
+        st.caption("まだコンプリートしたこころはありません。")
 
-# ==========================================
-# Tab 3: 履歴 (新機能)
-# ==========================================
-with tab_history:
-    st.subheader("📅 活動記録")
-    
-    df = load_history()
-    if not df.empty:
-        # 直近7日間の達成数集計
-        df['date_dt'] = pd.to_datetime(df['date']).dt.date
-        daily_counts = df[df['done']==True].groupby('date_dt')['task'].count()
-        
-        st.bar_chart(daily_counts)
-        
-        st.write("▼ 詳細ログ")
-        # 見やすいように直近を上に
-        st.dataframe(df[df['done']==True].sort_values('date', ascending=False), use_container_width=True)
-        
-        # データダウンロード機能
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("履歴をCSVで保存", csv, "dqw_history.csv", "text/csv")
-        st.caption("※Cloud版ではアプリが再起動すると履歴が消えることがあります。こまめにダウンロードするか、PCで実行することをお勧めします。")
-    else:
-        st.info("まだ記録がありません。日課タブでチェックを入れましょう！")
-
-# ==========================================
-# Tab 4: 収集 (こころ)
-# ==========================================
-with tab_kokoro:
-    st.subheader("🔍 収集アシスト")
-    
-    # ボタンを大きく配置
+    # --- 外部リンク ---
+    st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        st.link_button("📺 YouTube検索", "https://www.youtube.com/results?search_query=ドラクエウォーク+最強こころ+最新", use_container_width=True)
+        st.link_button("📺 YouTubeで最強心を検索", "https://www.youtube.com/results?search_query=ドラクエウォーク+こころ+最強")
     with col2:
-        st.link_button("🛡️ 攻略サイト", "https://walk.gamewith.jp/", use_container_width=True)
-        
-    st.write("---")
-    
-    # セッション管理（簡易）
-    if 'targets' not in st.session_state:
-        st.session_state['targets'] = ["覚醒千里行", "キラーマジンガ"]
-        
-    st.markdown("##### ほしい物リスト")
-    for i, t in enumerate(st.session_state['targets']):
-        c1, c2 = st.columns([0.8, 0.2])
-        c1.write(f"・{t}")
-        if c2.button("×", key=f"del_{i}"):
-            st.session_state['targets'].pop(i)
-            st.rerun()
-            
-    with st.form("add"):
-        new = st.text_input("追加など")
-        if st.form_submit_button("追加", use_container_width=True) and new:
-            st.session_state['targets'].append(new)
-            st.rerun()
+        st.link_button("🛡️ 攻略サイト(GameWith)", "https://walk.gamewith.jp/")
