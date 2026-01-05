@@ -1,2 +1,8 @@
 streamlit
 pandas
+gspread
+oauth2client
+lxml
+html5lib
+requests
+beautifulsoup4
