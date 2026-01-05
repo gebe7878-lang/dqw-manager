@@ -2,11 +2,27 @@ import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import requests
-from bs4 import BeautifulSoup
+from datetime import date, datetime, timedelta
+import altair as alt # グラフ用
 
-# --- 設定 ---
-st.set_page_config(page_title="DQW Manager Auto", page_icon="🛡️", layout="wide")
+# --- 設定: スマホで見やすく (Layout & CSS) ---
+st.set_page_config(page_title="DQW Manager V5", page_icon="🛡️", layout="wide")
+
+# スマホ用カスタムCSS (文字を大きく、ボタンを押しやすく)
+st.markdown("""
+    <style>
+    /* 全体の文字サイズアップ */
+    html, body, [class*="css"] { font-size: 16px !important; }
+    /* チェックボックスの余白拡大 */
+    .stCheckbox { padding-top: 10px; padding-bottom: 10px; }
+    /* タブの文字を大きく */
+    button[data-baseweb="tab"] { font-size: 18px !important; font-weight: bold !important; }
+    /* ボタンを指で押しやすく */
+    .stButton button { min-height: 50px !important; border-radius: 12px !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+# 定数
 SHEET_NAME = "dqw_data"
 
 # --- 関数: スプレッドシート接続 ---
@@ -19,50 +35,69 @@ def init_connection():
     return client
 
 # --- 関数: データ読み書き ---
-def load_data(worksheet_name, default_data):
-    try:
-        client = init_connection()
-        sheet = client.open(SHEET_NAME)
-        try:
-            worksheet = sheet.worksheet(worksheet_name)
-            data = worksheet.get_all_records()
-            return pd.DataFrame(data)
-        except gspread.WorksheetNotFound:
-            worksheet = sheet.add_worksheet(title=worksheet_name, rows=100, cols=20)
-            worksheet.update([default_data.columns.values.tolist()] + default_data.values.tolist())
-            return default_data
-    except Exception as e:
-        return default_data
-
-def save_data(worksheet_name, df):
+def get_worksheet(worksheet_name, headers=None):
+    """シートを取得。なければ作る"""
     client = init_connection()
     sheet = client.open(SHEET_NAME)
-    worksheet = sheet.worksheet(worksheet_name)
-    worksheet.clear()
-    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-
-# --- 関数: スクレイピング (GameWithなどの表を取得) ---
-def fetch_tables_from_url(url):
     try:
-        # User-Agentを偽装してブラウザからのアクセスに見せる
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        response = requests.get(url, headers=headers)
-        response.encoding = response.apparent_encoding # 文字化け防止
+        ws = sheet.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        ws = sheet.add_worksheet(title=worksheet_name, rows=100, cols=20)
+        if headers:
+            ws.append_row(headers)
+    return ws
+
+def load_data(worksheet_name, default_df):
+    try:
+        ws = get_worksheet(worksheet_name, default_df.columns.tolist())
+        data = ws.get_all_records()
+        if not data: return default_df
+        return pd.DataFrame(data)
+    except Exception:
+        return default_df
+
+def save_data(worksheet_name, df):
+    ws = get_worksheet(worksheet_name)
+    ws.clear()
+    ws.update([df.columns.values.tolist()] + df.values.tolist())
+
+# --- 関数: 履歴ログ記録 ---
+def log_history(task_name, is_done):
+    """タスクの状態が変わったときに履歴シートに記録する"""
+    ws = get_worksheet("history", ["date", "task", "status"])
+    today_str = date.today().isoformat()
+    
+    # 今日のそのタスクのログがあるか確認して更新、なければ追加
+    # (簡易実装: 追記型でいくと重くなるので、スプレッドシート側で処理したいが
+    #  今回はStreamlit上で処理して書き戻す方式にします)
+    try:
+        # 全データ取得
+        records = ws.get_all_records()
+        df_hist = pd.DataFrame(records)
         
-        # PandasでHTML内の<table>をすべて抽出
-        tables = pd.read_html(response.text)
-        return tables
+        # 既存レコード検索
+        mask = (df_hist["date"] == today_str) & (df_hist["task"] == task_name)
+        
+        if mask.any():
+            # 更新
+            df_hist.loc[mask, "status"] = "Done" if is_done else "Todo"
+        else:
+            # 新規
+            new_row = {"date": today_str, "task": task_name, "status": "Done" if is_done else "Todo"}
+            df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+            
+        # 保存 (全書き換えは遅いので、件数が増えたら要注意だが個人利用ならOK)
+        ws.clear()
+        ws.update([df_hist.columns.values.tolist()] + df_hist.values.tolist())
+        
     except Exception as e:
-        st.error(f"データ取得エラー: {e}")
-        return []
+        st.error(f"履歴保存エラー: {e}")
 
 # --- アプリ本体 ---
-st.title("🛡️ DQW マネージャー (Web取込機能付)")
+st.title("🛡️ DQW V5")
 
-# 初期データ
-default_tasks = pd.DataFrame([{"task": "デイリークエスト", "done": False}])
+# データ初期化
+default_tasks = pd.DataFrame([{"task": "デイリークエスト", "done": False}, {"task": "スラミチメダル", "done": False}, {"task": "CM動画", "done": False}])
 default_kokoro = pd.DataFrame([{"名前": "キラーマジンガ", "優先度": "高", "目標数": 2, "所持数": 0, "完了": False}])
 
 if 'tasks_df' not in st.session_state:
@@ -70,87 +105,135 @@ if 'tasks_df' not in st.session_state:
 if 'kokoro_df' not in st.session_state:
     st.session_state['kokoro_df'] = load_data("kokoro", default_kokoro)
 
-tab1, tab2, tab3 = st.tabs(["✅ 日課", "❤️ こころ管理", "🌐 Web取込(New!)"])
+# タブ構成
+tab1, tab2, tab3 = st.tabs(["✅ 日課", "📊 履歴", "❤️ こころ"])
 
-# --- Tab 1: 日課 (省略せず前回同様の機能を維持) ---
+# ==========================================
+# Tab 1: 日課 (スマホ最適化リスト)
+# ==========================================
 with tab1:
-    st.subheader("今日のタスク")
-    # (ここの中身は前回のコードと同じ記述でOKですが、長くなるので省略します。必要なら補完します)
-    # 簡易実装:
+    st.caption(f"📅 {date.today().strftime('%Y/%m/%d')} のタスク")
+    
+    # 達成率バー
     df_t = st.session_state['tasks_df']
-    edited_t = st.data_editor(df_t, num_rows="dynamic", key="editor_t", use_container_width=True)
-    if not edited_t.equals(df_t):
-        st.session_state['tasks_df'] = edited_t
-        save_data("tasks", edited_t)
+    done_count = len(df_t[df_t['done']==True])
+    total_count = len(df_t)
+    if total_count > 0:
+        progress = done_count / total_count
+        st.progress(progress)
+        st.caption(f"達成: {done_count}/{total_count}")
+    
+    st.write("---")
+    
+    # リスト表示 (表ではなく、大きなチェックボックスを並べる)
+    idx_to_remove = []
+    
+    for i, row in df_t.iterrows():
+        # カラム比率: チェックボックス(広め) + 削除ボタン(狭め)
+        c1, c2 = st.columns([0.85, 0.15])
+        
+        # 大きなチェックボックス
+        is_checked = c1.checkbox(row['task'], value=row['done'], key=f"check_{i}")
+        
+        # 状態変化検知 & 履歴ログ保存
+        if is_checked != row['done']:
+            df_t.at[i, 'done'] = is_checked
+            st.session_state['tasks_df'] = df_t
+            save_data("tasks", df_t) # マスタ更新
+            log_history(row['task'], is_checked) # 履歴記録
+            st.rerun()
+            
+        # 削除ボタン
+        if c2.button("🗑️", key=f"del_{i}"):
+            idx_to_remove.append(i)
+
+    # 削除実行
+    if idx_to_remove:
+        st.session_state['tasks_df'] = df_t.drop(idx_to_remove).reset_index(drop=True)
+        save_data("tasks", st.session_state['tasks_df'])
         st.rerun()
 
-# --- Tab 2: こころ管理 ---
+    # 新規追加エリア
+    st.write("---")
+    with st.expander("＋ タスクを追加"):
+        with st.form("add_task_form", clear_on_submit=True):
+            new_task = st.text_input("タスク名")
+            if st.form_submit_button("追加", use_container_width=True):
+                if new_task:
+                    new_row = pd.DataFrame([{"task": new_task, "done": False}])
+                    st.session_state['tasks_df'] = pd.concat([st.session_state['tasks_df'], new_row], ignore_index=True)
+                    save_data("tasks", st.session_state['tasks_df'])
+                    st.rerun()
+
+# ==========================================
+# Tab 2: 履歴 (グラフで見える化)
+# ==========================================
 with tab2:
-    st.subheader("こころリスト")
-    edited_k = st.data_editor(
+    st.subheader("📈 過去の活動記録")
+    
+    if st.button("履歴データを更新"):
+        st.cache_data.clear() # キャッシュクリア
+        st.rerun()
+
+    try:
+        ws_hist = get_worksheet("history", ["date", "task", "status"])
+        data_hist = ws_hist.get_all_records()
+        
+        if data_hist:
+            df_hist = pd.DataFrame(data_hist)
+            # Doneのものだけ抽出
+            df_done = df_hist[df_hist['status'] == 'Done']
+            
+            if not df_done.empty:
+                # 日付ごとの達成数
+                daily_counts = df_done.groupby("date").size().reset_index(name="count")
+                
+                # 棒グラフ (Altair使用)
+                chart = alt.Chart(daily_counts).mark_bar().encode(
+                    x=alt.X('date', title='日付'),
+                    y=alt.Y('count', title='達成数'),
+                    tooltip=['date', 'count']
+                ).properties(height=300)
+                
+                st.altair_chart(chart, use_container_width=True)
+                
+                # 直近の履歴リスト
+                st.markdown("##### 直近の達成ログ")
+                st.dataframe(df_done.sort_values("date", ascending=False).head(10), use_container_width=True)
+            else:
+                st.info("まだ達成記録がありません。")
+        else:
+            st.info("履歴データがまだありません。")
+            
+    except Exception as e:
+        st.error(f"履歴読み込みエラー: {e}")
+
+# ==========================================
+# Tab 3: こころ (スマホ最適化)
+# ==========================================
+with tab3:
+    st.caption("こころリスト (タップして編集)")
+    
+    # データエディタ (ここはExcelライクのままが便利だが、高さを調整)
+    edited_df = st.data_editor(
         st.session_state['kokoro_df'],
         num_rows="dynamic",
-        key="editor_k",
         use_container_width=True,
         column_config={
-            "優先度": st.column_config.SelectboxColumn("優先", options=["高", "中", "低"]),
-        }
+            "名前": st.column_config.TextColumn("名前", required=True),
+            "優先度": st.column_config.SelectboxColumn("優先", options=["高", "中", "低"], width="small"),
+            "目標数": st.column_config.NumberColumn("目標", width="small"),
+            "所持数": st.column_config.NumberColumn("所持", width="small"),
+            "完了": st.column_config.CheckboxColumn("済", disabled=True),
+        },
+        key="kokoro_editor"
     )
-    if not edited_k.equals(st.session_state['kokoro_df']):
-        st.session_state['kokoro_df'] = edited_k
-        save_data("kokoro", edited_k)
-        st.rerun()
-
-# --- Tab 3: スクレイピング機能 (ここがメイン) ---
-with tab3:
-    st.subheader("🌐 攻略サイトからリストを取り込む")
-    st.info("GameWithなどの「最強こころランキング」や「イベントこころリスト」のURLを貼り付けてください。")
-
-    target_url = st.text_input("記事のURL", placeholder="https://walk.gamewith.jp/article/show/...")
     
-    if st.button("ページを解析する"):
-        if target_url:
-            with st.spinner("サイトを解析中..."):
-                tables = fetch_tables_from_url(target_url)
-                
-            if tables:
-                st.success(f"{len(tables)} 個の表が見つかりました！")
-                
-                # 見つかった表を一つずつプレビュー表示
-                for i, table in enumerate(tables):
-                    with st.expander(f"表 No.{i+1} (データ数: {len(table)})"):
-                        st.dataframe(table)
-                        
-                        # この表を取り込むボタン
-                        if st.button(f"この表をリストに追加 (No.{i+1})", key=f"add_tbl_{i}"):
-                            # データの整形と追加ロジック
-                            # ※表の列名はサイトによって違うので、1列目を「名前」と仮定して取り込む
-                            new_items = []
-                            try:
-                                # 1列目のデータを取得（多くのサイトで1列目がモンスター名）
-                                monster_names = table.iloc[:, 0].astype(str).tolist()
-                                
-                                for name in monster_names:
-                                    # 重複チェック
-                                    if name not in st.session_state['kokoro_df']["名前"].values:
-                                        new_items.append({
-                                            "名前": name,
-                                            "優先度": "中", # 自動取込は「中」にする
-                                            "目標数": 2,     # デフォルト2個
-                                            "所持数": 0,
-                                            "完了": False
-                                        })
-                                
-                                if new_items:
-                                    new_df = pd.DataFrame(new_items)
-                                    st.session_state['kokoro_df'] = pd.concat([st.session_state['kokoro_df'], new_df], ignore_index=True)
-                                    save_data("kokoro", st.session_state['kokoro_df'])
-                                    st.toast(f"{len(new_items)} 件を追加しました！")
-                                    st.rerun()
-                                else:
-                                    st.warning("追加できるデータがありませんでした（すべて登録済みか、空です）。")
-                                    
-                            except Exception as e:
-                                st.error(f"取り込みに失敗しました: {e}")
-            else:
-                st.warning("表データが見つかりませんでした。別のページを試してください。")
+    if not edited_df.equals(st.session_state['kokoro_df']):
+        edited_df["完了"] = edited_df["所持数"] >= edited_df["目標数"]
+        st.session_state['kokoro_df'] = edited_df
+        save_data("kokoro", edited_df)
+        st.rerun()
+        
+    st.write("---")
+    st.link_button("📺 YouTube検索", "https://www.youtube.com/results?search_query=ドラクエウォーク+こころ+最強", use_container_width=True)
