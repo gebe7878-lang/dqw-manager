@@ -143,3 +143,29 @@ with tab2:
         st.rerun()
 
     # --- 履歴表示 ---
+    st.write("---")
+    st.markdown("### 🏆 獲得済み (履歴)")
+    completed = edited_df[edited_df["完了"] == True]
+    if not completed.empty:
+        st.dataframe(completed, use_container_width=True)
+    else:
+        st.caption("まだ獲得済みのこころはありません。")
+
+# ==========================================
+# Tab 3: 外部連携・バックアップ
+# ==========================================
+with tab3:
+    st.subheader("📡 情報収集")
+    c1, c2 = st.columns(2)
+    c1.link_button("📺 YouTube検索", "https://www.youtube.com/results?search_query=ドラクエウォーク+こころ+最強")
+    c2.link_button("🛡️ GameWith", "https://walk.gamewith.jp/")
+    
+    st.write("---")
+    st.subheader("💾 データのバックアップ")
+    st.caption("念のため、定期的にデータをダウンロードして保存しておきましょう。")
+    
+    csv_tasks = st.session_state['tasks_df'].to_csv(index=False).encode('utf-8')
+    st.download_button("日課リストを保存", csv_tasks, "tasks.csv", "text/csv")
+    
+    csv_kokoro = st.session_state['kokoro_df'].to_csv(index=False).encode('utf-8')
+    st.download_button("こころリストを保存", csv_kokoro, "kokoro.csv", "text/csv")
